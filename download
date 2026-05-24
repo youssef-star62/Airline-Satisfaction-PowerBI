@@ -1,0 +1,80 @@
+# Data Model — Star Schema Design
+
+## Overview
+
+The raw `train.csv` from Kaggle contains 103,904 rows × 25 columns in a flat (denormalized) format. For BI tooling, this is suboptimal: it mixes measures with dimensions, repeats text values, and makes filtering inefficient.
+
+The transformation converts it into a **star schema** — one central fact table containing the numeric measures and foreign keys, surrounded by dimension tables containing descriptive attributes.
+
+## Tables
+
+### Fact Table
+
+**`fact_flight_satisfaction`** — 103,904 rows
+- One row per survey response (the grain)
+- Contains foreign keys to all dimensions
+- Holds numeric measures: `age`, `flight_distance`, `departure_delay_in_minutes`, `arrival_delay_in_minutes`
+- Holds the 14 service rating columns (1-5 scale) as measures
+- `flight_survey_id` is a degenerate dimension (the original survey ID kept for traceability)
+
+### Dimension Tables
+
+| Table | Columns | Rows | Why It Exists |
+|---|---|---|---|
+| `dim_passenger` | passenger_key, gender, customer_type, age_band | 20 | Demographic attributes that describe *who* the passenger is |
+| `dim_flight` | flight_key, type_of_travel, class | 6 | Flight characteristics that describe *what kind* of journey it was |
+| `dim_satisfaction` | satisfaction_key, satisfaction | 2 | The outcome label — kept as a dimension so it can be sliced/filtered |
+| `dim_distance` | distance_key, distance_band | 4 | Pre-binned distance categories for easy grouping |
+
+### Secondary Fact Table (Created at Load Time)
+
+**`fact_service_ratings`** — ~1,454,656 rows (103,904 × 14)
+- Created by **unpivoting** the 14 service rating columns from the main fact
+- Each row = one passenger's rating on one specific service
+- Enables single-measure analysis across all services (`Avg Rating`, `% Bottom Box`, `Satisfaction Lift`)
+- Without this, the rating-vs-importance quadrant chart would require 14 hardcoded measures
+
+## Why a Galaxy Schema?
+
+A pure star schema has exactly one fact table. This project uses a **galaxy schema** (also called "fact constellation") — two fact tables sharing the same dimensions:
+
+```
+              dim_passenger ─── dim_flight ─── dim_satisfaction
+                   │                │                 │
+                   ├────────────────┼─────────────────┤
+                   │                │                 │
+        fact_flight_satisfaction    │    fact_service_ratings
+                                    │
+                              dim_distance
+```
+
+**Why two fact tables?**
+
+The 14 service ratings can be useful in two formats:
+1. **Wide** (on `fact_flight_satisfaction`) — when you want to filter by a specific rating (e.g., "passengers who rated wifi ≤ 2")
+2. **Long** (on `fact_service_ratings`) — when you want to treat "service" as a category to group by (e.g., "average rating per service across all 14")
+
+Keeping both formats avoids the trade-off and supports more visualization patterns.
+
+## Design Decisions
+
+### Age — stored both as raw number AND as age band
+
+`fact_flight_satisfaction[age]` holds the raw integer (e.g., 47) for precise calculations.
+`dim_passenger[age_band]` holds the bucket ("45-59") for grouping.
+
+This is the **hybrid pattern**: dimension for grouping, raw number on fact for precision.
+
+### Why service ratings stayed on the main fact (not in a junk dimension)
+
+A junk dimension for 14 ratings with 5 possible values each = 5^14 ≈ 6.1 billion combinations. That's much larger than the fact table itself, defeating the purpose. **Ratings are measures, not attributes** — they describe the experience of the trip, not properties of the passenger or flight.
+
+### No DimDate
+
+The source data has no date column. If timestamps were added later, a `dim_date` would be the natural next addition — it would be the first dimension I'd add for time-series analysis.
+
+## Relationships
+
+All relationships are **Many-to-One** (* : 1) from fact to dimension, with **Single** cross-filter direction (the dimension filters the fact, never the other way).
+
+For `fact_service_ratings`, the relationships may be created as **inactive** by Power BI (dashed lines) because of the ambiguity caused by having two paths to `dim_satisfaction`. The solution is to use `USERELATIONSHIP()` inside the measures that need them (see [02_dax_patterns.md](02_dax_patterns.md)).

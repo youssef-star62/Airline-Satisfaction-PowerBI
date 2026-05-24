@@ -1,0 +1,21 @@
+passenger_key,gender,customer_type,age_band
+1,Male,Loyal Customer,Under 18
+2,Male,disloyal Customer,18-29
+3,Female,Loyal Customer,18-29
+4,Male,Loyal Customer,60+
+5,Male,Loyal Customer,45-59
+6,Female,Loyal Customer,45-59
+7,Female,Loyal Customer,30-44
+8,Female,disloyal Customer,18-29
+9,Female,Loyal Customer,Under 18
+10,Male,Loyal Customer,30-44
+11,Male,disloyal Customer,Under 18
+12,Male,Loyal Customer,18-29
+13,Female,disloyal Customer,Under 18
+14,Female,Loyal Customer,60+
+15,Male,disloyal Customer,30-44
+16,Female,disloyal Customer,30-44
+17,Female,disloyal Customer,45-59
+18,Female,disloyal Customer,60+
+19,Male,disloyal Customer,45-59
+20,Male,disloyal Customer,60+

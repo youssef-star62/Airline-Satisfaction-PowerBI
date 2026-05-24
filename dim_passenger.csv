@@ -1,0 +1,48 @@
+# Data
+
+This folder contains the **transformed star schema CSVs** ready to load into Power BI.
+
+## Original Dataset
+
+The source data is the **Airline Passenger Satisfaction** dataset, publicly available on Kaggle:
+
+🔗 https://www.kaggle.com/datasets/teejmahal20/airline-passenger-satisfaction
+
+If you want to reproduce the data transformation from scratch:
+1. Download `train.csv` from Kaggle.
+2. Run the transformation script (see `dax/measures.dax` header notes), or use the CSVs in this folder directly.
+
+## Files in This Folder
+
+| File | Rows | Purpose |
+|---|---|---|
+| `fact_flight_satisfaction.csv` | 103,904 | Central fact — one row per survey response |
+| `dim_passenger.csv` | 20 | Gender × Customer Type × Age Band combinations |
+| `dim_flight.csv` | 6 | Travel Type × Class combinations |
+| `dim_satisfaction.csv` | 2 | Satisfied / Neutral or Dissatisfied |
+| `dim_distance.csv` | 4 | Flight distance bands |
+| `schema.sql` | — | SQL DDL describing the star schema |
+
+## Loading into Power BI
+
+```
+Home → Get Data → Text/CSV
+→ Select each file
+→ Load (not Transform — they're already clean)
+```
+
+Then go to **Model view** and create these relationships (all Many-to-One, Single direction):
+
+- `fact_flight_satisfaction[passenger_key]` → `dim_passenger[passenger_key]`
+- `fact_flight_satisfaction[flight_key]` → `dim_flight[flight_key]`
+- `fact_flight_satisfaction[satisfaction_key]` → `dim_satisfaction[satisfaction_key]`
+- `fact_flight_satisfaction[distance_key]` → `dim_distance[distance_key]`
+
+For the secondary `fact_service_ratings` table (used for service-level analysis), create it inside Power Query by:
+1. Reference `fact_flight_satisfaction`
+2. Keep only ID columns + the 14 rating columns
+3. Select the 14 rating columns → Unpivot Columns
+4. Rename `Attribute` → `service`, `Value` → `rating`
+5. Capitalize service names and replace underscores with spaces
+
+This produces ~1.45M rows. Then create the same relationships to all four dimensions (they may need to be activated via `USERELATIONSHIP` inside measures — see `dax/measures.dax`).

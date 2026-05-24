@@ -1,0 +1,176 @@
+# Key DAX Patterns Used
+
+This document explains the **non-obvious** DAX patterns in this project. For the complete measure library, see [`../dax/measures.dax`](../dax/measures.dax).
+
+## 1. The Star Schema Foundation
+
+```dax
+Total Surveys = COUNTROWS ( fact_flight_satisfaction )
+
+Satisfied Count =
+CALCULATE (
+    [Total Surveys],
+    dim_satisfaction[satisfaction] = "satisfied"
+)
+
+Satisfaction Rate % = DIVIDE ( [Satisfied Count], [Total Surveys], 0 )
+```
+
+These three measures power everything else. The `DIVIDE` function (instead of `/`) handles division by zero gracefully.
+
+## 2. The `USERELATIONSHIP` Pattern
+
+**The problem:** `fact_service_ratings` (the unpivoted table) and `fact_flight_satisfaction` both connect to `dim_satisfaction`. Power BI deactivates one to avoid filter ambiguity.
+
+**The solution:** Activate the relationship inline, only inside specific measures:
+
+```dax
+Sat When Rated 5 =
+CALCULATE (
+    DIVIDE (
+        CALCULATE (
+            COUNTROWS ( fact_service_ratings ),
+            dim_satisfaction[satisfaction] = "satisfied"
+        ),
+        COUNTROWS ( fact_service_ratings ),
+        0
+    ),
+    fact_service_ratings[rating] = 5,
+    USERELATIONSHIP (
+        fact_service_ratings[satisfaction_key],
+        dim_satisfaction[satisfaction_key]
+    )
+)
+```
+
+`USERELATIONSHIP` works **only inside CALCULATE or CALCULATETABLE**, and only activates an existing (inactive) relationship — it can't create one.
+
+## 3. The "Lift" Pattern — Effect Size
+
+This is the most useful pattern for service strategy analysis:
+
+```dax
+Satisfaction Lift = [Sat When Rated 5] - [Sat When Rated 1]
+```
+
+It answers: *"If we improved this service from terrible to excellent, how much would satisfaction move?"*
+
+**Result for this dataset:** Online Boarding tops the chart at +73 percentage points, while Departure Time Convenience comes in at -6 (negative!).
+
+The negative result for Departure Time was the most surprising finding in the entire analysis — passengers who say timing is convenient are *less* likely to be satisfied overall, suggesting some confounding factor (likely correlated with budget/class).
+
+## 4. The "Gap vs Benchmark" Pattern for Drill-through
+
+When drilling into a segment, you want two numbers: the segment's value AND the overall benchmark for comparison.
+
+```dax
+Segment Satisfaction % = [Satisfaction Rate %]
+-- Auto-filters to whatever drill-through filter is applied
+
+Benchmark Satisfaction % =
+CALCULATE (
+    [Satisfaction Rate %],
+    ALL ( dim_flight ),
+    ALL ( dim_passenger ),
+    ALL ( dim_distance )
+)
+-- ALL() removes drill-through filters, returning the global benchmark
+
+Gap vs Benchmark = [Segment Satisfaction %] - [Benchmark Satisfaction %]
+```
+
+Combine with a conditional color measure for an instant "good/bad" KPI card:
+
+```dax
+Gap Color =
+IF ( [Gap vs Benchmark] >= 0, "#1D9E75", "#E24B4A" )
+
+Gap Display =
+VAR Gap = [Gap vs Benchmark]
+VAR Arrow = IF ( Gap >= 0, "▲", "▼" )
+RETURN Arrow & " " & FORMAT ( Gap, "+0.0%;-0.0%" )
+```
+
+Drop `Gap Display` into a card visual, and format its color by `Gap Color`. Now you have a card that automatically shows `▼ -53.6%` in red when below benchmark, `▲ +5.2%` in green when above.
+
+## 5. The Importance Lookup Pattern
+
+For the rating-vs-importance quadrant chart, we need a "correlation with satisfaction" value per service. Computing this in pure DAX over 1.45M rows is slow and complex.
+
+**The pattern:** compute it once externally (Python in this case), then import as a static lookup table:
+
+```dax
+ServiceImportance =
+DATATABLE (
+    "service", STRING,
+    "importance", DOUBLE,
+    {
+        { "Online Boarding",       0.504 },
+        { "Inflight Entertainment", 0.398 },
+        ...
+        { "Gate Location",          0.001 }
+    }
+)
+```
+
+Connect this table to `fact_service_ratings[service]` (many-to-one), then create:
+
+```dax
+Service Importance = AVERAGE ( ServiceImportance[importance] )
+```
+
+For a strategy dashboard, importance is a structural property of the data — it shouldn't change based on slicers. The static lookup is faster, simpler, and more honest about what the number represents.
+
+## 6. The Bottom-Box / Top-Box Pattern
+
+```dax
+% Bottom Box =
+DIVIDE (
+    CALCULATE (
+        COUNTROWS ( fact_service_ratings ),
+        fact_service_ratings[rating] <= 2
+    ),
+    COUNTROWS ( fact_service_ratings ),
+    0
+)
+
+% Top Box =
+DIVIDE (
+    CALCULATE (
+        COUNTROWS ( fact_service_ratings ),
+        fact_service_ratings[rating] >= 4
+    ),
+    COUNTROWS ( fact_service_ratings ),
+    0
+)
+```
+
+These reveal patterns that averages hide. A service rated 2.7 on average could mean:
+- Everyone gives it a 3 (uniform mediocrity) — *low bottom-box, low top-box*
+- Half rate it 1, half rate it 5 (polarized) — *high bottom-box, high top-box*
+
+These are completely different problems requiring different fixes.
+
+## 7. The Sort-by-Column Trick (for Age Bands)
+
+To make `age_band` sort in life-stage order ("Under 18, 18-29, 30-44, 45-59, 60+") instead of alphabetical order ("18-29, 30-44, 45-59, 60+, Under 18"), you need a numeric sort helper column.
+
+**Important:** create it in **Power Query (M)**, not DAX. Creating it in DAX referencing `age_band` causes a circular dependency error.
+
+```m
+// In Power Query — Conditional Column on dim_passenger
+if [age_band] = "Under 18" then 1
+else if [age_band] = "18-29" then 2
+else if [age_band] = "30-44" then 3
+else if [age_band] = "45-59" then 4
+else if [age_band] = "60+" then 5
+else 0
+```
+
+Then in Power BI: select `age_band` → Column Tools → **Sort by column** → `age_band_sort`.
+
+## Performance Notes
+
+- All measures use `CALCULATE` filter arguments rather than `FILTER ( ALL ( ... ) )` where possible — they're optimized differently and CALCULATE filters compile to set-based operations.
+- The unpivoted `fact_service_ratings` table is 1.45M rows but VertiPaq compresses it well — actual file size impact is ~25-30MB.
+- The `USERELATIONSHIP` pattern is fast — it's an in-engine flag, not a runtime cost.

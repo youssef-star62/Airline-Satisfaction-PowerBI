@@ -1,0 +1,5 @@
+distance_key,distance_band
+1,Short-haul (<500)
+2,Medium-haul (500-1499)
+3,Long-haul (1500-2999)
+4,Ultra-long-haul (3000+)
